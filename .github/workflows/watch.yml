@@ -2,17 +2,17 @@ name: US Fund Watch
 
 on:
   schedule:
-    # Daily full summary at 09:00 IST (03:30 UTC).
-    - cron: '30 3 * * *'
-    # Change checks every 2h, 06:30-20:30 IST. Openings fill fast, so the
-    # alert should arrive within hours, not the next morning.
-    - cron: '0 1-15/2 * * *'
+    # Hourly at :17 past, 05:47-23:47 IST. GitHub's cron is best-effort: runs
+    # at :00 are the most congested and often delayed for hours or dropped, so
+    # we use an odd minute and run often. The daily summary is not tied to a
+    # slot -- watch.py sends it on the first run after 09:00 IST each day.
+    - cron: '17 0-18 * * *'
   workflow_dispatch:
     inputs:
       mode:
         description: 'daily = send full summary, check = alert only on change'
         type: choice
-        options: [daily, check]
+        options: [daily, check, auto]
         default: daily
 
 # Never let two runs race on data/status.json.
@@ -36,10 +36,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "30 3 * * *" ]; then
-            echo "mode=daily" >> "$GITHUB_OUTPUT"
           else
-            echo "mode=check" >> "$GITHUB_OUTPUT"
+            echo "mode=auto" >> "$GITHUB_OUTPUT"
           fi
 
       # Runner's built-in python3; script is stdlib-only, so no setup/pip

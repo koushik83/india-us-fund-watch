@@ -46,6 +46,7 @@ MIN_EXPECTED = 10      # fewer US funds than this => discovery is broken
 MAX_FAIL_RATIO = 0.3   # more scheme fetch failures than this => source is broken
 DELAY = 0.5            # seconds between Kuvera requests
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
+DAILY_HOUR_IST = 9     # daily summary goes out on the first run at/after this hour
 
 
 class SourceBroken(Exception):
@@ -300,11 +301,22 @@ def log_history(changes, cur):
 # ---------------------------------------------------------------- main
 def main():
     args = sys.argv[1:]
-    mode = "daily" if "daily" in args else "check"
     no_send, no_write = "--no-send" in args, "--no-write" in args
 
     prev_state = load(STATUS, {})
     prev = prev_state.get("funds", {})
+    today = now_ist().strftime("%Y-%m-%d")
+    # "auto": GitHub's cron is best-effort and silently skips runs, so the
+    # daily summary isn't tied to one schedule slot -- the first run after
+    # DAILY_HOUR IST that finds no summary sent today sends it.
+    if "daily" in args:
+        mode = "daily"
+    elif "check" in args:
+        mode = "check"
+    else:
+        mode = "daily" if (now_ist().hour >= DAILY_HOUR_IST
+                           and prev_state.get("last_daily") != today) else "check"
+    print(f"mode={mode}")
     health = load(HEALTH, {"ok": True})
 
     try:
@@ -328,8 +340,9 @@ def main():
     changes = confirm(diff(prev, cur), cur)
     print(f"{len(cur)} US funds; {len(changes)} change(s); {len(failures)} fetch failure(s)")
 
+    daily_sent = False
     if mode == "daily":
-        send(daily_message(cur, changes, failures), no_send)
+        daily_sent = send(daily_message(cur, changes, failures), no_send)
     elif changes:
         send(alert_message(changes, cur), no_send)
     if not health.get("ok", True):
@@ -342,7 +355,9 @@ def main():
     # In check mode only rewrite state when something changed, so the repo gets
     # at most one routine commit a day (from the daily run).
     if mode == "daily" or changes or not prev:
+        last_daily = today if daily_sent else prev_state.get("last_daily")
         save(STATUS, {"checked_at_ist": now_ist().isoformat(timespec="minutes"),
+                      "last_daily": last_daily,
                       "source": "kuvera", "funds": dict(sorted(cur.items()))})
     if not health.get("ok", True):
         save(HEALTH, {"ok": True})
