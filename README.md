@@ -7,11 +7,14 @@ investment limit is used up, and when one reopens the headroom fills fast.
 
 ## What it does
 
-| When | What you get |
-|---|---|
-| Every 2h, 06:30–20:30 IST | 🚨 Alert **only if** a fund opened, closed, or its lumpsum cap changed |
-| Daily 09:00 IST | 🇺🇸 Full summary: open / SIP-only / closed |
-| If the data source breaks | ⚠️ "watcher is broken" (once, then daily until fixed), ✅ when it recovers |
+**One Telegram message a day, max**, sent on the first run after 09:00 IST:
+
+- 🇺🇸 Summary: lumpsum open / SIP-only / closed, plus anything that changed since yesterday
+- 🚨 A banner on top if any fund opened
+- ⚠️ "watcher is broken" instead, if the data source fails (✅ noted on the first good day after)
+
+The workflow fires hourly only as retries, because GitHub's cron silently skips runs.
+Run it manually from the Actions tab to force a check + message now.
 
 - **Source:** Kuvera's public fund API (`lump_available`, `sip_available`, `lump_max`).
   These are Kuvera's flags. They almost always match the AMC's, but confirm on
@@ -33,7 +36,7 @@ Repo secrets (Settings → Secrets and variables → Actions):
 
 ```
 python watch.py daily --no-send --no-write   # dry run, prints the summary
-python watch.py check                         # alert only on change
+python watch.py                               # today's summary, if not yet sent
 ```
 
 Stdlib-only Python 3.8+. No dependencies.

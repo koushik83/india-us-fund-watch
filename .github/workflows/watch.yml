@@ -2,18 +2,12 @@ name: US Fund Watch
 
 on:
   schedule:
-    # Hourly at :17 past, 05:47-23:47 IST. GitHub's cron is best-effort: runs
-    # at :00 are the most congested and often delayed for hours or dropped, so
-    # we use an odd minute and run often. The daily summary is not tied to a
-    # slot -- watch.py sends it on the first run after 09:00 IST each day.
+    # ONE Telegram message per day. GitHub's cron is best-effort (runs at :00
+    # are often delayed for hours or dropped), so we fire hourly at :17 purely
+    # as retries: the first run after 09:00 IST sends the day's summary and
+    # every later run that day exits in a second without touching Kuvera.
     - cron: '17 0-18 * * *'
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: 'daily = send full summary, check = alert only on change'
-        type: choice
-        options: [daily, check, auto]
-        default: daily
+  workflow_dispatch:   # manual run = force a check + summary now
 
 # Never let two runs race on data/status.json.
 concurrency:
@@ -31,19 +25,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Pick mode
-        id: mode
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "mode=auto" >> "$GITHUB_OUTPUT"
-          fi
-
       # Runner's built-in python3; script is stdlib-only, so no setup/pip
       # steps that can rot over the years.
       - name: Check funds
-        run: python3 watch.py ${{ steps.mode.outputs.mode }}
+        run: python3 watch.py ${{ github.event_name == 'workflow_dispatch' && 'daily' || '' }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

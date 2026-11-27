@@ -7,8 +7,8 @@ polls Kuvera's public fund API, diffs against the last known state, and pings
 Telegram.
 
 Modes:
-  python watch.py check    # alert only if something changed (run every ~2h)
-  python watch.py daily    # always send the full status summary
+  python watch.py          # send today's summary if not yet sent (after 09:00 IST)
+  python watch.py daily    # force a check + summary now
 Flags:
   --no-send   print messages instead of sending to Telegram
   --no-write  don't update data/ files (pure dry run)
@@ -205,20 +205,14 @@ def change_lines(changes, cur):
     return [text for _, text in sorted(lines, key=lambda x: x[0])]
 
 
-def alert_message(changes, cur):
-    opened = any(k in ("lump", "sip") and new == "Y" for _, k, _, new in changes)
-    head = "🚨 <b>US fund OPENED — act fast</b>" if opened else "🔔 <b>US fund status changed</b>"
-    lines = [head, ""] + change_lines(changes, cur)
-    lines += ["", f"<i>{now_ist():%d %b %H:%M} IST · via Kuvera</i>"]
-    return "\n".join(lines)
-
-
 def daily_message(cur, changes, failures):
     lump_open = [f for f in cur.values() if f["lump"] == "Y"]
     sip_only = [f for f in cur.values() if f["lump"] == "N" and f["sip"] == "Y"]
     closed = [f for f in cur.values() if f["lump"] == "N" and f["sip"] == "N"]
     by_name = lambda fs: sorted(fs, key=lambda f: f["name"])
-    lines = [f"🇺🇸 <b>US funds watch — {now_ist():%a %d %b}</b>",
+    opened_today = any(k in ("lump", "sip") and new == "Y" for _, k, _, new in changes)
+    lines = (["🚨 <b>A US fund OPENED since yesterday — act fast</b>", ""] if opened_today else []) + [
+             f"🇺🇸 <b>US funds watch — {now_ist():%a %d %b}</b>",
              f"{len(lump_open)} open · {len(sip_only)} SIP-only · {len(closed)} closed", ""]
     if lump_open:
         lines.append("<b>🟢 Lumpsum OPEN</b>")
@@ -233,7 +227,7 @@ def daily_message(cur, changes, failures):
         lines += [f"• {html.escape(f['name'])}" for f in by_name(closed)]
         lines.append("")
     if changes:
-        lines.append("<b>Changed since last check</b>")
+        lines.append("<b>Changed since yesterday</b>")
         lines += change_lines(changes, cur)
         lines.append("")
     if failures:
@@ -300,33 +294,43 @@ def log_history(changes, cur):
 
 # ---------------------------------------------------------------- main
 def main():
+    """One Telegram message per day, max.
+
+    The workflow fires hourly only so a skipped GitHub cron slot can't lose the
+    day: the first run at/after DAILY_HOUR_IST with no message sent today does
+    the check and sends the summary (or a "broken" notice); every later run
+    that day exits immediately. `python watch.py daily` forces a run.
+    """
     args = sys.argv[1:]
     no_send, no_write = "--no-send" in args, "--no-write" in args
 
     prev_state = load(STATUS, {})
     prev = prev_state.get("funds", {})
     today = now_ist().strftime("%Y-%m-%d")
-    # "auto": GitHub's cron is best-effort and silently skips runs, so the
-    # daily summary isn't tied to one schedule slot -- the first run after
-    # DAILY_HOUR IST that finds no summary sent today sends it.
-    if "daily" in args:
-        mode = "daily"
-    elif "check" in args:
-        mode = "check"
-    else:
-        mode = "daily" if (now_ist().hour >= DAILY_HOUR_IST
-                           and prev_state.get("last_daily") != today) else "check"
-    print(f"mode={mode}")
+    if "daily" not in args:
+        if now_ist().hour < DAILY_HOUR_IST:
+            print(f"Before {DAILY_HOUR_IST}:00 IST -- nothing to do.")
+            return
+        if prev_state.get("last_daily") == today:
+            print("Today's message already sent -- nothing to do.")
+            return
     health = load(HEALTH, {"ok": True})
+
+    def save_status(funds, sent):
+        if no_write:
+            return
+        save(STATUS, {"checked_at_ist": now_ist().isoformat(timespec="minutes"),
+                      "last_daily": today if sent else prev_state.get("last_daily"),
+                      "source": "kuvera", "funds": dict(sorted(funds.items()))})
 
     try:
         cur, failures = snapshot()
     except SourceBroken as exc:
         print(f"::error::{exc}")
-        # alert once when it breaks, then once a day while it stays broken
-        if health.get("ok", True) or mode == "daily":
-            send(f"⚠️ <b>US fund watcher is broken</b>\n{html.escape(str(exc))}\n\n"
-                 f"Fix: {REPO_URL}/actions", no_send)
+        sent = send(f"⚠️ <b>US fund watcher is broken</b>\n{html.escape(str(exc))}\n\n"
+                    f"Fix: {REPO_URL}/actions", no_send)
+        # counts as today's message; keep the last good fund state for diffing
+        save_status(prev, sent)
         if not no_write:
             save(HEALTH, {"ok": False, "since": health.get("since") if not health.get("ok", True)
                           else now_ist().isoformat(timespec="minutes"), "error": str(exc)})
@@ -340,25 +344,16 @@ def main():
     changes = confirm(diff(prev, cur), cur)
     print(f"{len(cur)} US funds; {len(changes)} change(s); {len(failures)} fetch failure(s)")
 
-    daily_sent = False
-    if mode == "daily":
-        daily_sent = send(daily_message(cur, changes, failures), no_send)
-    elif changes:
-        send(alert_message(changes, cur), no_send)
+    msg = daily_message(cur, changes, failures)
     if not health.get("ok", True):
-        send("✅ <b>US fund watcher recovered</b>", no_send)
+        msg = "✅ <i>Watcher recovered after an outage.</i>\n\n" + msg
+    sent = send(msg, no_send)
 
     if no_write:
         return
     if changes:
         log_history(changes, cur)
-    # In check mode only rewrite state when something changed, so the repo gets
-    # at most one routine commit a day (from the daily run).
-    if mode == "daily" or changes or not prev:
-        last_daily = today if daily_sent else prev_state.get("last_daily")
-        save(STATUS, {"checked_at_ist": now_ist().isoformat(timespec="minutes"),
-                      "last_daily": last_daily,
-                      "source": "kuvera", "funds": dict(sorted(cur.items()))})
+    save_status(cur, sent)
     if not health.get("ok", True):
         save(HEALTH, {"ok": True})
 
