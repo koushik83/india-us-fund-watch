@@ -3,10 +3,10 @@ name: US Fund Watch
 on:
   schedule:
     # ONE Telegram message per day. GitHub's cron is best-effort (runs at :00
-    # are often delayed for hours or dropped), so we fire hourly at :17 purely
+    # are often delayed for hours or dropped), so we fire hourly at :47 UTC (:17 IST) purely
     # as retries: the first run after 09:00 IST sends the day's summary and
     # every later run that day exits in a second without touching Kuvera.
-    - cron: '17 0-18 * * *'
+    - cron: '47 0-17 * * *'
   workflow_dispatch:   # manual run = force a check + summary now
 
 # Never let two runs race on data/status.json.
